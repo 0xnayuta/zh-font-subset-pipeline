@@ -1,0 +1,114 @@
+name: Build Fonts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'data/**'
+      - 'fonts/raw/**'
+      - 'scripts/**'
+      - 'new.txt'
+  pull_request:
+    paths:
+      - 'data/**'
+      - 'fonts/raw/**'
+      - 'scripts/**'
+      - 'new.txt'
+
+# 取消正在运行的相同 workflow
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            merge_inputs:
+              - 'data/**'
+              - 'scripts/merge.js'
+              - 'scripts/update-charset.js'
+              - 'new.txt'
+            subset_inputs:
+              - 'fonts/raw/**'
+              - 'scripts/subset-fonts.js'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Check whether charset update is needed
+        id: check_update
+        if: steps.changes.outputs.merge_inputs == 'true'
+        run: |
+          if [ ! -f "new.txt" ]; then
+            echo "need_update=false" >> "$GITHUB_OUTPUT"
+            echo "new.txt not found, skip update-charset"
+            exit 0
+          fi
+
+          NEED_UPDATE=$(node -e "
+            const fs = require('fs');
+            const base = fs.readFileSync('./data/chars-all.txt', 'utf8');
+            const incoming = fs.readFileSync('./new.txt', 'utf8');
+            const baseSet = new Set(Array.from(base));
+            const incomingChars = Array.from(incoming);
+            const hasNew = incomingChars.some(ch => !baseSet.has(ch));
+            process.stdout.write(hasNew ? 'true' : 'false');
+          ")
+
+          echo "need_update=$NEED_UPDATE" >> "$GITHUB_OUTPUT"
+          if [ "$NEED_UPDATE" = "true" ]; then
+            echo "new.txt contains new chars, will run update-charset"
+          else
+            echo "new.txt has no new chars, skip update-charset"
+          fi
+
+      - name: Update base charset
+        if: steps.changes.outputs.merge_inputs == 'true' && steps.check_update.outputs.need_update == 'true'
+        run: node scripts/update-charset.js ./new.txt
+
+      - name: Merge charsets
+        id: merge
+        if: steps.changes.outputs.merge_inputs == 'true'
+        run: node scripts/merge.js
+
+      - name: Subset fonts
+        id: subset
+        if: steps.merge.outcome == 'success' || steps.changes.outputs.subset_inputs == 'true'
+        run: node scripts/subset-fonts.js
+
+      - name: Upload TTF artifacts
+        if: steps.subset.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fonts-ttf
+          path: fonts/ttf/
+
+      - name: Upload WOFF2 artifacts
+        if: steps.subset.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fonts-woff2
+          path: fonts/woff2/

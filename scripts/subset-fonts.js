@@ -47,7 +47,9 @@ fontminTtf.run(function (err, files) {
     const ttfFiles = path.join(ttfDestDir, '*.ttf');
     const fontminWoff2 = new Fontmin()
         .src(ttfFiles)
-        .use(Fontmin.ttf2woff2())
+        // 关闭 clone，避免触发 clone-stats(new fs.Stats()) 的 DEP0180 警告
+        // 同时避免把原始 TTF 再复制到 woff2 输出目录
+        .use(Fontmin.ttf2woff2({ clone: false }))
         .dest(woff2DestDir);
 
     fontminWoff2.run(function (err, files) {
